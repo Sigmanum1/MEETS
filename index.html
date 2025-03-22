@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Family Meets</title>
+    <title>Google Meet Clone</title>
     <script type="module">
         // Import Firebase (MODULAR SDK)
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
@@ -12,14 +12,14 @@
 
         // Firebase Config (Replace with your actual Firebase project config)
         const firebaseConfig = {
-            apiKey: "AIzaSyAYB34RbSbv_dSD7LZgQMasdeB8zZXy_sQ",
-            authDomain: "meet-71636.firebaseapp.com",
-            projectId: "meet-71636",
-            storageBucket: "meet-71636.firebasestorage.app",
-            messagingSenderId: "389144552067",
-            appId: "1:389144552067:web:034055552890b88b71f1b6",
-            measurementId: "G-VDGL3M9VS3"
-        };
+  apiKey: "AIzaSyAYB34RbSbv_dSD7LZgQMasdeB8zZXy_sQ",
+  authDomain: "meet-71636.firebaseapp.com",
+  projectId: "meet-71636",
+  storageBucket: "meet-71636.firebasestorage.app",
+  messagingSenderId: "389144552067",
+  appId: "1:389144552067:web:034055552890b88b71f1b6",
+  measurementId: "G-VDGL3M9VS3"
+};
 
         // Initialize Firebase
         const app = initializeApp(firebaseConfig);
@@ -32,7 +32,9 @@
         const signOutBtn = document.getElementById("signOutBtn");
         const userNameDisplay = document.getElementById("userName");
         const startCallBtn = document.getElementById("startCall");
+        const joinCallBtn = document.getElementById("joinCall");
         const callIdDisplay = document.getElementById("callIdDisplay");
+        const callIdInput = document.getElementById("callIdInput");
         const participantsDiv = document.getElementById("participants");
 
         let localStream;
@@ -92,7 +94,57 @@
             // Generate and display the call ID
             const callId = `${userId}_${Date.now()}`;
             callIdDisplay.innerText = `Call ID: ${callId}`;
+            callIdInput.value = callId; // Populate the input for sharing
             navigator.clipboard.writeText(callId);  // Copy to clipboard
+        });
+
+        // Join a call
+        joinCallBtn.addEventListener("click", async () => {
+            const callId = callIdInput.value;
+
+            if (!callId) {
+                alert("Please enter a valid Call ID");
+                return;
+            }
+
+            const callDocRef = doc(db, "calls", callId);
+
+            const callDocSnapshot = await getDoc(callDocRef);
+            if (callDocSnapshot.exists()) {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+
+                addVideoStream(userId, userName, localStream);
+
+                // Add participant to Firestore
+                const userDoc = doc(db, "participants", userId);
+                await setDoc(userDoc, { name: userName });
+
+                // Listen for existing participants and connect to them
+                onSnapshot(collection(db, "participants"), (snapshot) => {
+                    snapshot.docChanges().forEach(async (change) => {
+                        if (change.type === "added" && change.doc.id !== userId) {
+                            const newUserId = change.doc.id;
+                            const newUserName = change.doc.data().name;
+                            connectToNewUser(newUserId, newUserName);
+                        }
+                    });
+                });
+
+                // Create an offer for connection
+                const peerConnection = new RTCPeerConnection(servers);
+                peerConnections[userId] = peerConnection;
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                await setDoc(callDocRef, { offer });
+
+                peerConnection.ontrack = (event) => {
+                    addVideoStream(userId, userName, event.streams[0]);
+                };
+            } else {
+                alert("Invalid Call ID, no such meeting found.");
+            }
         });
 
         // Connect to a new participant
@@ -172,7 +224,7 @@
 </head>
 <body class="bg-gray-900 text-white flex flex-col items-center justify-center h-screen">
 
-    <h1 class="text-2xl font-bold mb-4">Family Meets</h1>
+    <h1 class="text-2xl font-bold mb-4">Google Meet Clone</h1>
 
     <!-- Google Sign-In -->
     <button id="signInBtn" class="bg-blue-500 px-4 py-2 rounded">Sign in with Google</button>
@@ -182,6 +234,8 @@
     <!-- Call Controls -->
     <div class="mt-4 flex gap-2">
         <button id="startCall" class="bg-green-500 px-4 py-2 rounded">Start Call</button>
+        <input id="callIdInput" class="px-4 py-2 rounded text-black" placeholder="Enter Call ID" />
+        <button id="joinCall" class="bg-blue-500 px-4 py-2 rounded">Join Call</button>
     </div>
 
     <!-- Call ID Display -->
