@@ -3,47 +3,93 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Chat</title>
+    <title>Google Meet Clone</title>
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js"></script>
-    <style>
-        video { width: 45%; border: 2px solid black; }
-        button { margin: 5px; }
-    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-    <h2>Google Meet Clone</h2>
-    <video id="localVideo" autoplay playsinline></video>
-    <video id="remoteVideo" autoplay playsinline></video>
-    <br>
-    <button id="startCall">Start Call</button>
-    <button id="joinCall">Join Call</button>
-    <button id="hangup">Hang Up</button>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center h-screen">
+
+    <h1 class="text-2xl font-bold mb-4">Google Meet Clone</h1>
+
+    <!-- Google Sign-In -->
+    <button id="signInBtn" class="bg-blue-500 px-4 py-2 rounded">Sign in with Google</button>
+    <button id="signOutBtn" class="bg-red-500 px-4 py-2 rounded hidden">Sign Out</button>
+    <p id="userName" class="mt-2"></p>
+
+    <!-- Video Section -->
+    <div class="flex gap-4 mt-4">
+        <video id="localVideo" autoplay playsinline class="border w-60 h-40"></video>
+        <video id="remoteVideo" autoplay playsinline class="border w-60 h-40"></video>
+    </div>
+
+    <!-- Call Controls -->
+    <div class="mt-4 flex gap-2">
+        <button id="startCall" class="bg-green-500 px-4 py-2 rounded">Start Call</button>
+        <button id="joinCall" class="bg-blue-500 px-4 py-2 rounded">Join Call</button>
+        <button id="hangup" class="bg-red-500 px-4 py-2 rounded">Hang Up</button>
+    </div>
+
+    <!-- Call ID Display -->
+    <p id="callIdDisplay" class="mt-2"></p>
+
+    <!-- Extra Controls -->
+    <div class="mt-4 flex gap-2">
+        <button id="toggleMic" class="bg-gray-700 px-4 py-2 rounded">Mute</button>
+        <button id="toggleCamera" class="bg-gray-700 px-4 py-2 rounded">Camera Off</button>
+    </div>
 
     <script>
-        // Firebase config (Replace with your own config)
+        // Firebase Config (Replace with your own)
         const firebaseConfig = {
-        apiKey: "AIzaSyAYB34RbSbv_dSD7LZgQMasdeB8zZXy_sQ",
-        authDomain: "meet-71636.firebaseapp.com",
-        projectId: "meet-71636",
-        storageBucket: "meet-71636.firebasestorage.app",
-        messagingSenderId: "389144552067",
-        appId: "1:389144552067:web:034055552890b88b71f1b6",
-        measurementId: "G-VDGL3M9VS3"
-        };
-        
+  apiKey: "AIzaSyAYB34RbSbv_dSD7LZgQMasdeB8zZXy_sQ",
+  authDomain: "meet-71636.firebaseapp.com",
+  projectId: "meet-71636",
+  storageBucket: "meet-71636.firebasestorage.app",
+  messagingSenderId: "389144552067",
+  appId: "1:389144552067:web:034055552890b88b71f1b6",
+  measurementId: "G-VDGL3M9VS3"
+};
+
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
+        const auth = firebase.auth();
 
         const localVideo = document.getElementById('localVideo');
         const remoteVideo = document.getElementById('remoteVideo');
         const startCallButton = document.getElementById('startCall');
         const joinCallButton = document.getElementById('joinCall');
         const hangupButton = document.getElementById('hangup');
+        const toggleMicButton = document.getElementById('toggleMic');
+        const toggleCameraButton = document.getElementById('toggleCamera');
+        const signInBtn = document.getElementById('signInBtn');
+        const signOutBtn = document.getElementById('signOutBtn');
+        const userName = document.getElementById('userName');
+        const callIdDisplay = document.getElementById('callIdDisplay');
 
         let localStream, remoteStream, peerConnection;
         const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+        let micEnabled = true;
+        let cameraEnabled = true;
+
+        // Google Sign-In
+        signInBtn.onclick = () => {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            auth.signInWithPopup(provider).then(result => {
+                userName.innerText = `Signed in as: ${result.user.displayName}`;
+                signInBtn.classList.add('hidden');
+                signOutBtn.classList.remove('hidden');
+            }).catch(error => console.error(error));
+        };
+
+        signOutBtn.onclick = () => {
+            auth.signOut().then(() => {
+                userName.innerText = "";
+                signInBtn.classList.remove('hidden');
+                signOutBtn.classList.add('hidden');
+            });
+        };
 
         async function startCall() {
             localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -71,7 +117,7 @@
 
             callDoc.onSnapshot(snapshot => {
                 const data = snapshot.data();
-                if (!peerConnection.currentRemoteDescription && data?.answer) {
+                if (data?.answer) {
                     peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
                 }
             });
@@ -84,9 +130,8 @@
                 });
             });
 
-            startCallButton.disabled = true;
-            joinCallButton.disabled = false;
-            alert(`Share this call ID: ${callDoc.id}`);
+            callIdDisplay.innerHTML = `Call ID: <b>${callDoc.id}</b> (Copied to clipboard)`;
+            navigator.clipboard.writeText(callDoc.id);
         }
 
         async function joinCall() {
@@ -130,23 +175,22 @@
                     }
                 });
             });
-
-            startCallButton.disabled = true;
-            joinCallButton.disabled = true;
         }
 
-        function hangupCall() {
-            peerConnection.close();
-            localStream.getTracks().forEach(track => track.stop());
-            remoteStream.getTracks().forEach(track => track.stop());
+        toggleMicButton.onclick = () => {
+            micEnabled = !micEnabled;
+            localStream.getAudioTracks()[0].enabled = micEnabled;
+            toggleMicButton.innerText = micEnabled ? "Mute" : "Unmute";
+        };
 
-            startCallButton.disabled = false;
-            joinCallButton.disabled = false;
-        }
+        toggleCameraButton.onclick = () => {
+            cameraEnabled = !cameraEnabled;
+            localStream.getVideoTracks()[0].enabled = cameraEnabled;
+            toggleCameraButton.innerText = cameraEnabled ? "Camera Off" : "Camera On";
+        };
 
         startCallButton.onclick = startCall;
         joinCallButton.onclick = joinCall;
-        hangupButton.onclick = hangupCall;
     </script>
 </body>
 </html>
