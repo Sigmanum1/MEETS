@@ -7,19 +7,19 @@
     <script type="module">
         // Import Firebase (MODULAR SDK)
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
-        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, deleteDoc } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, signOut } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
         // Firebase Config (Replace with your actual Firebase project config)
         const firebaseConfig = {
-  apiKey: "AIzaSyAYB34RbSbv_dSD7LZgQMasdeB8zZXy_sQ",
-  authDomain: "meet-71636.firebaseapp.com",
-  projectId: "meet-71636",
-  storageBucket: "meet-71636.firebasestorage.app",
-  messagingSenderId: "389144552067",
-  appId: "1:389144552067:web:034055552890b88b71f1b6",
-  measurementId: "G-VDGL3M9VS3"
-};
+            apiKey: "AIzaSyAYB34RbSbv_dSD7LZgQMasdeB8zZXy_sQ",
+            authDomain: "meet-71636.firebaseapp.com",
+            projectId: "meet-71636",
+            storageBucket: "meet-71636.firebasestorage.app",
+            messagingSenderId: "389144552067",
+            appId: "1:389144552067:web:034055552890b88b71f1b6",
+            measurementId: "G-VDGL3M9VS3"
+        };
 
         // Initialize Firebase
         const app = initializeApp(firebaseConfig);
@@ -30,22 +30,26 @@
         // DOM Elements
         const signInBtn = document.getElementById("signInBtn");
         const signOutBtn = document.getElementById("signOutBtn");
-        const userName = document.getElementById("userName");
+        const userNameDisplay = document.getElementById("userName");
         const startCallBtn = document.getElementById("startCall");
-        const joinCallBtn = document.getElementById("joinCall");
-        const hangupBtn = document.getElementById("hangup");
-        const localVideo = document.getElementById("localVideo");
-        const remoteVideo = document.getElementById("remoteVideo");
         const callIdDisplay = document.getElementById("callIdDisplay");
+        const participantsDiv = document.getElementById("participants");
 
-        let localStream, remoteStream, peerConnection;
+        let localStream;
+        let userName;
+        let userId;
+        let peerConnections = {};
+
         const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
         // Handle Google Sign-In
         signInBtn.addEventListener("click", async () => {
             try {
                 const result = await signInWithPopup(auth, provider);
-                userName.innerText = `Signed in as: ${result.user.displayName}`;
+                userName = result.user.displayName;
+                userId = result.user.uid;
+
+                userNameDisplay.innerText = `Signed in as: ${userName}`;
                 signInBtn.classList.add("hidden");
                 signOutBtn.classList.remove("hidden");
             } catch (error) {
@@ -56,64 +60,112 @@
         // Handle Google Sign-Out
         signOutBtn.addEventListener("click", async () => {
             await signOut(auth);
-            userName.innerText = "";
+            userNameDisplay.innerText = "";
             signInBtn.classList.remove("hidden");
             signOutBtn.classList.add("hidden");
         });
 
-        // Start a new call
+        // Start a call
         startCallBtn.addEventListener("click", async () => {
             localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            localVideo.srcObject = localStream;
 
-            peerConnection = new RTCPeerConnection(servers);
-            remoteStream = new MediaStream();
-            remoteVideo.srcObject = remoteStream;
+            // Display local video
+            addVideoStream(userId, userName, localStream);
 
+            // Register user in Firestore
+            const userDoc = doc(db, "participants", userId);
+            await setDoc(userDoc, { name: userName });
+
+            // Listen for new participants
+            onSnapshot(collection(db, "participants"), (snapshot) => {
+                snapshot.docChanges().forEach(async (change) => {
+                    if (change.type === "added" && change.doc.id !== userId) {
+                        const newUserId = change.doc.id;
+                        const newUserName = change.doc.data().name;
+                        connectToNewUser(newUserId, newUserName);
+                    } else if (change.type === "removed") {
+                        removeVideoStream(change.doc.id);
+                    }
+                });
+            });
+
+            // Generate and display the call ID
+            const callId = `${userId}_${Date.now()}`;
+            callIdDisplay.innerText = `Call ID: ${callId}`;
+            navigator.clipboard.writeText(callId);  // Copy to clipboard
+        });
+
+        // Connect to a new participant
+        async function connectToNewUser(newUserId, newUserName) {
+            const peerConnection = new RTCPeerConnection(servers);
+            peerConnections[newUserId] = peerConnection;
+
+            // Add local tracks to the connection
             localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-            peerConnection.ontrack = event => event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
 
-            const callDoc = doc(collection(db, "calls"));
-            await setDoc(callDoc, { offer: (await peerConnection.createOffer()).sdp });
+            // Create an offer
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
 
-            callIdDisplay.innerHTML = `Call ID: <b>${callDoc.id}</b> (Copied to clipboard)`;
-            navigator.clipboard.writeText(callDoc.id);
-        });
+            // Store the offer in Firestore
+            const callDoc = doc(db, "calls", `${userId}_${newUserId}`);
+            await setDoc(callDoc, { offer });
 
-        // Join an existing call
-        joinCallBtn.addEventListener("click", async () => {
-            const callId = prompt("Enter call ID:");
-            if (!callId) return;
+            // Listen for answer
+            onSnapshot(callDoc, async (snapshot) => {
+                const data = snapshot.data();
+                if (data?.answer) {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            });
 
-            const callDoc = doc(db, "calls", callId);
-            const callData = (await getDoc(callDoc)).data();
-            if (!callData) {
-                alert("Call not found!");
-                return;
-            }
+            // Listen for remote tracks
+            peerConnection.ontrack = (event) => {
+                addVideoStream(newUserId, newUserName, event.streams[0]);
+            };
 
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            localVideo.srcObject = localStream;
+            // Handle ICE candidates
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    setDoc(doc(db, "iceCandidates", `${userId}_${newUserId}`), { candidate: event.candidate });
+                }
+            };
 
-            peerConnection = new RTCPeerConnection(servers);
-            remoteStream = new MediaStream();
-            remoteVideo.srcObject = remoteStream;
+            // Listen for ICE candidates from other user
+            onSnapshot(doc(db, "iceCandidates", `${newUserId}_${userId}`), async (snapshot) => {
+                const data = snapshot.data();
+                if (data?.candidate) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            });
+        }
 
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-            peerConnection.ontrack = event => event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        // Add a user's video stream
+        function addVideoStream(id, name, stream) {
+            if (document.getElementById(id)) return; // Prevent duplicates
 
-            await peerConnection.setRemoteDescription({ type: "offer", sdp: callData.offer });
-            await peerConnection.setLocalDescription(await peerConnection.createAnswer());
+            const videoContainer = document.createElement("div");
+            videoContainer.id = id;
+            videoContainer.classList.add("participant");
 
-            await setDoc(callDoc, { answer: peerConnection.localDescription.sdp }, { merge: true });
-        });
+            const videoElement = document.createElement("video");
+            videoElement.srcObject = stream;
+            videoElement.autoplay = true;
+            videoElement.playsInline = true;
 
-        // Hang up the call
-        hangupBtn.addEventListener("click", () => {
-            peerConnection.close();
-            localStream.getTracks().forEach(track => track.stop());
-            remoteStream.getTracks().forEach(track => track.stop());
-        });
+            const nameTag = document.createElement("p");
+            nameTag.innerText = name;
+
+            videoContainer.appendChild(videoElement);
+            videoContainer.appendChild(nameTag);
+            participantsDiv.appendChild(videoContainer);
+        }
+
+        // Remove a user's video stream
+        function removeVideoStream(id) {
+            const videoElement = document.getElementById(id);
+            if (videoElement) videoElement.remove();
+        }
 
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -127,21 +179,16 @@
     <button id="signOutBtn" class="bg-red-500 px-4 py-2 rounded hidden">Sign Out</button>
     <p id="userName" class="mt-2"></p>
 
-    <!-- Video Section -->
-    <div class="flex gap-4 mt-4">
-        <video id="localVideo" autoplay playsinline class="border w-60 h-40"></video>
-        <video id="remoteVideo" autoplay playsinline class="border w-60 h-40"></video>
-    </div>
-
     <!-- Call Controls -->
     <div class="mt-4 flex gap-2">
         <button id="startCall" class="bg-green-500 px-4 py-2 rounded">Start Call</button>
-        <button id="joinCall" class="bg-blue-500 px-4 py-2 rounded">Join Call</button>
-        <button id="hangup" class="bg-red-500 px-4 py-2 rounded">Hang Up</button>
     </div>
 
     <!-- Call ID Display -->
-    <p id="callIdDisplay" class="mt-2"></p>
+    <div id="callIdDisplay" class="mt-4 text-lg font-bold"></div>
+
+    <!-- Participants Container -->
+    <div id="participants" class="mt-6 grid grid-cols-2 gap-4"></div>
 
 </body>
 </html>
