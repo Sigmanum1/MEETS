@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Chat</title>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js"></script>
+    <style>
+        video { width: 45%; border: 2px solid black; }
+        button { margin: 5px; }
+    </style>
+</head>
+<body>
+    <h2>Google Meet Clone</h2>
+    <video id="localVideo" autoplay playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <br>
+    <button id="startCall">Start Call</button>
+    <button id="joinCall">Join Call</button>
+    <button id="hangup">Hang Up</button>
+
+    <script>
+        // Firebase config (Replace with your own config)
+        const firebaseConfig = {
+        apiKey: "AIzaSyAYB34RbSbv_dSD7LZgQMasdeB8zZXy_sQ",
+        authDomain: "meet-71636.firebaseapp.com",
+        projectId: "meet-71636",
+        storageBucket: "meet-71636.firebasestorage.app",
+        messagingSenderId: "389144552067",
+        appId: "1:389144552067:web:034055552890b88b71f1b6",
+        measurementId: "G-VDGL3M9VS3"
+        };
+        
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const startCallButton = document.getElementById('startCall');
+        const joinCallButton = document.getElementById('joinCall');
+        const hangupButton = document.getElementById('hangup');
+
+        let localStream, remoteStream, peerConnection;
+        const servers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+        async function startCall() {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+
+            peerConnection = new RTCPeerConnection(servers);
+            remoteStream = new MediaStream();
+            remoteVideo.srcObject = remoteStream;
+
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            peerConnection.ontrack = event => event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+
+            const callDoc = db.collection('calls').doc();
+            const offerCandidates = callDoc.collection('offerCandidates');
+            const answerCandidates = callDoc.collection('answerCandidates');
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) offerCandidates.add(event.candidate.toJSON());
+            };
+
+            const offerDescription = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offerDescription);
+
+            await callDoc.set({ offer: offerDescription });
+
+            callDoc.onSnapshot(snapshot => {
+                const data = snapshot.data();
+                if (!peerConnection.currentRemoteDescription && data?.answer) {
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            });
+
+            answerCandidates.onSnapshot(snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added') {
+                        peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                    }
+                });
+            });
+
+            startCallButton.disabled = true;
+            joinCallButton.disabled = false;
+            alert(`Share this call ID: ${callDoc.id}`);
+        }
+
+        async function joinCall() {
+            const callId = prompt("Enter call ID:");
+            if (!callId) return;
+
+            const callDoc = db.collection('calls').doc(callId);
+            const offerCandidates = callDoc.collection('offerCandidates');
+            const answerCandidates = callDoc.collection('answerCandidates');
+
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+
+            peerConnection = new RTCPeerConnection(servers);
+            remoteStream = new MediaStream();
+            remoteVideo.srcObject = remoteStream;
+
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            peerConnection.ontrack = event => event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) answerCandidates.add(event.candidate.toJSON());
+            };
+
+            const callData = (await callDoc.get()).data();
+            if (!callData) {
+                alert("Call ID not found!");
+                return;
+            }
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
+            const answerDescription = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answerDescription);
+
+            await callDoc.update({ answer: answerDescription });
+
+            offerCandidates.onSnapshot(snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added') {
+                        peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                    }
+                });
+            });
+
+            startCallButton.disabled = true;
+            joinCallButton.disabled = true;
+        }
+
+        function hangupCall() {
+            peerConnection.close();
+            localStream.getTracks().forEach(track => track.stop());
+            remoteStream.getTracks().forEach(track => track.stop());
+
+            startCallButton.disabled = false;
+            joinCallButton.disabled = false;
+        }
+
+        startCallButton.onclick = startCall;
+        joinCallButton.onclick = joinCall;
+        hangupButton.onclick = hangupCall;
+    </script>
+</body>
+</html>
